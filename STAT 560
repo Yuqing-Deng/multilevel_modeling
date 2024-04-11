@@ -1,0 +1,473 @@
+---
+title: "Final Project for STAT 560"
+author: "Yuqing(Sophie) Deng"
+date: "2023-10-27"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(knitr)
+library(bookdown)
+library(magrittr)
+library(ggplot2)
+library(cowplot)
+theme_set(theme_cowplot())
+library(plotly)
+library(rstanarm)
+library(lme4)
+library(bayesplot)
+library(ggplot2)
+library(dplyr)
+library(Matrix)
+```
+
+Dataset is found in [Kaggle](https://www.kaggle.com/datasets/samyukthamurali/airbnb-ratings-dataset/data) .
+
+### Exploratory Data Analysis
+
+```{r}
+# Load the data and have a glimpse of the the data
+data=read.csv('/Users/dengyuqing/Desktop/NY_Listings.csv')
+head(data)
+```
+
+```{r}
+# Have a general picture of price distribution
+summary(data$Price)
+```
+
+```{r}
+# Filter out those observations that have null values in 'Price' or have a price 0
+data <- data %>%filter(!is.na(Price) & Price != 0)
+```
+
+```{r}
+# Drop observations that have missing values
+data <- na.omit(data)
+```
+
+```{r}
+# Plot the histogram of price distribution
+ggplot(data, aes(x = Price)) +
+  geom_histogram(bins = 30, fill = "#4b2e83", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Price", x = "Price", y = "Count") 
+```
+
+
+```{r}
+# All variables 
+colnames(data)
+```
+
+```{r}
+# Number of 'City'(group)
+unique(data$City)
+```
+
+```{r}
+# See price distribution after data cleaning 
+summary(data$Price)
+```
+
+```{r}
+# Plot the histogram of price distribution
+ggplot(data, aes(x = Price)) +
+  geom_histogram(bins = 30, fill = "#4b2e83", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Price", x = "Price", y = "Count")
+```
+
+```{r}
+# Violin Plot of Price distribution
+ggplot(data, aes(x = "", y = Price)) +
+  geom_violin(fill = "#e8e3d3", color = "black") +
+  theme_minimal() +
+  labs(title = "Violin Plot of Price", x = "", y = "Price")
+
+```
+
+```{r}
+# Sample 6500 data points (stratified sampling)
+library(purrr)
+
+# Calculate counts for each city
+city_counts <- data %>%
+  group_by(City) %>%
+  summarise(Count = n())
+
+# Calculate sample size for each city
+total_samples <- 6500
+city_counts <- city_counts %>%
+  mutate(SampleSize = round((Count / sum(Count)) * total_samples))
+
+# Stratified sampling based on city
+set.seed(1234)  
+sampled_data <- map2_df(city_counts$City, city_counts$SampleSize, ~ {
+  data %>%
+    filter(City == .x) %>%
+    sample_n(min(.y, n()))
+})
+
+# Print the result
+print(sampled_data) 
+
+```
+
+```{r}
+# Price distribution of sampled_data
+summary(data$Price)
+# Plotting the histogram of prices
+ggplot(sampled_data, aes(x = Price)) +
+  geom_histogram(bins = 30, fill = "#4b2e83", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Prices", x = "Price", y = "Count")
+
+```
+
+```{r}
+# Violin Plot of Price distribution for sampled_data
+ggplot(sampled_data, aes(x = "", y = Price)) +
+  geom_violin(fill = "#e8e3d3", color = "black") +
+  theme_minimal() +
+  labs(title = "Violin Plot of Price", x = "", y = "Price")
+
+```
+
+```{r}
+# Category all data points into five levels based on Price value
+sampled_data$color <- ifelse(sampled_data$Price <= 70, "#90EE90",  
+                    ifelse(sampled_data$Price <= 100, "#008000",  
+                    ifelse(sampled_data$Price <= 140, "#ADD8E6", 
+                    "#00008B"))) 
+
+```
+
+```{r}
+library(leaflet)
+
+# Set New York City geographic information 
+nyc_lat <- 40.7128
+nyc_long <- -74.0060
+
+# Plot data points of all listings in sampled_data
+leaflet(sampled_data) %>% 
+  addTiles() %>%  
+  setView(lng = nyc_long, lat = nyc_lat, zoom = 12) %>%
+  addCircleMarkers(lng = ~longitude, lat = ~latitude, color = ~color, 
+                   popup = ~paste("Price:", Price),
+                   radius = 0.3, opacity = 1, fillOpacity = 1)
+```
+
+```{r}
+# See which variable is more correlated with price
+
+# Select only numeric columns
+numeric_data <- select_if(sampled_data, is.numeric)
+
+# Compute correlation with 'Review.Scores.Rating'
+correlations <- cor(numeric_data, use = "complete.obs")['Price', ]
+
+# Remove NA values and the correlation of the variable with itself
+correlations <- correlations[!is.na(correlations) & names(correlations) != 'Review.Scores.Rating']
+
+# Order by absolute value of correlation
+ordered_correlations <- sort(abs(correlations), decreasing = TRUE)
+
+# Print the ordered correlations
+print(ordered_correlations)
+```
+```{r}
+# Anova test to investigate difference in the "Price" variable among different cities
+result <- aov(Price ~ City, data = sampled_data)
+summary(result)
+```
+
+The models will focus on the 'Price' as the outcome variable, with 'City' 'Bathrooms', 'Bedrooms' as Level 1 predictors. 
+
+### Experiment 1 
+
+```{r}
+# Investigate ICCs 
+library(performance)
+icc(lmer(Price ~ 1 + (1 | Neighbourhood.cleansed), data = sampled_data))
+icc(lmer(Price ~ 1 + (1 | City), data = sampled_data))
+```
+
+```{r} 
+# Seem composition of datapoints among five cities
+city_counts <- sampled_data %>%
+  group_by(City) %>%
+  summarise(Count = n())
+
+print(city_counts)
+
+```
+
+```{r}
+# Plot histogram of price for each city
+ggplot(sampled_data, aes(x = Price)) +
+  geom_histogram(binwidth = 10, fill = "#4b2e83", alpha = 0.7) +
+  facet_wrap(~ City) +
+  theme_minimal() +
+  labs(title = "Histogram of Prices for Each City",
+       x = "Price",
+       y = "Count")
+
+```
+
+
+
+```{r}
+# Box plot for Price in each city
+ggplot(sampled_data, aes(x = City, y = Price)) +
+  geom_boxplot(outlier.color ='#4b2e83') +
+  theme_minimal() +
+  labs(title = "Price Distribution by City", x = "City", y = "Price")
+
+```
+
+```{r}
+# Simple Random Intercept Model
+library(lme4)
+model_Random_Intercept <- lmer(Price ~ City + Bathrooms + Bedrooms +  (1 |City), data = sampled_data)
+summary(model_Random_Intercept)
+```
+
+```{r}
+# Classical linear model
+model_linear <- lm(Price ~ City + Bathrooms +Bedrooms, data = sampled_data)
+```
+
+```{r}
+# Random intercept and slope model
+model_with_random_slope <- lmer(Price ~ City +Bedrooms+Bathrooms + (1 + Bedrooms | City), data = sampled_data)
+summary(model_with_random_slope)
+```
+
+```{r}
+# Plot random intercept coefficients
+# Extract random effects estimates
+re_estimates <- ranef(model_Random_Intercept)$City
+
+# calculate variance
+re_se <- attr(ranef(model_Random_Intercept, condVar = TRUE)$City, "postVar")
+re_se <- sqrt(apply(re_se, 1, function(x) diag(x)))
+
+# calculate 95% confidence interval
+ci_multiplier <- qnorm(1 - (1 - 0.95) / 2) 
+re_ci_lower <- re_estimates - ci_multiplier * re_se
+re_ci_upper <- re_estimates + ci_multiplier * re_se
+
+# visualize significance effect
+re_effects_df <- data.frame(
+  Group = rownames(re_estimates),
+  Estimate = re_estimates[,"(Intercept)"],
+  CI_Lower = re_ci_lower[,"(Intercept)"],
+  CI_Upper = re_ci_upper[,"(Intercept)"]
+)
+
+ggplot(re_effects_df, aes(x = Group, y = Estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "95% CI of Random Intercepts per City", x = "City", y = "Random Intercept")
+
+```
+
+```{r}
+# Compare model performance
+library(broom)
+
+# Create a data frame to store AIC and BIC
+model_comparisons <- data.frame(
+  Model = c("Random Intercept", "Linear", "Random Intercept and Slope"),
+  AIC = c(AIC(model_Random_Intercept), AIC(model_linear), AIC(model_with_random_slope)),
+  BIC = c(BIC(model_Random_Intercept), BIC(model_linear), BIC(model_with_random_slope))
+)
+
+# Print the comparison table
+print(model_comparisons)
+```
+```{r}
+# Visualize model performance
+# Create a data frame with model names, AIC, and BIC
+model_data <- data.frame(
+  Model = c("Random Intercept", "Classical Linear", "Random Intercept and Slope"),
+  AIC = c(75895.33, 75922.09, 75572.22),
+  BIC = c(75956.35, 75976.32, 75646.79)
+)
+
+# Reshape the data frame for plotting
+library(reshape2)
+model_data <- melt(model_data, id.vars = "Model")
+
+# Create a beautiful plot
+ggplot(model_data, aes(x = Model, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("AIC" = "#4b2e83", "BIC" = "gray")) +
+  theme_minimal() +
+  labs(title = "Model Comparison by AIC and BIC",
+       x = "Model",
+       y = "Value") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_text(aes(label = round(value, 2)), vjust = -0.5, color = "black", position = position_dodge(width = 0.9))
+
+```
+
+### Experiment 2 
+```{r}
+# Randomly select 50 neighbourhoods and use neighbourhoods as group variable
+set.seed(1234)
+
+# Get a list of unique neighbors
+unique_neighbours <- unique(data$Neighbourhood.cleansed)
+
+# Use sample.int to randomly select 40 unique indices
+selected_indices <- sample.int(length(unique_neighbours), 40)
+
+# Select neighbors based on these indices
+selected_neighbours <- unique_neighbours[selected_indices]
+
+# Filter the data for these neighbors
+filtered_data <- data[data$Neighbourhood %in% selected_neighbours, ]
+
+```
+
+```{r}
+filtered_data
+```
+
+```{r}
+# See price distribution
+summary(filtered_data$Price)
+```
+
+```{r}
+# Plot the histogram of prices
+ggplot(filtered_data, aes(x = Price)) +
+  geom_histogram(bins = 30, fill = "#4b2e83", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Prices of 40 Random Neighbourhoods", x = "Price", y = "Count")
+
+```
+
+```{r}
+# Violin Plot of price
+ggplot(sampled_data, aes(x = "", y = Price)) +
+  geom_violin(fill = "#e8e3d3", color = "black") +
+  theme_minimal() +
+  labs(title = "Violin Plot of Price for 40 Random Neighbourhoods", x = "", y = "Price")
+```
+
+```{r}
+# Category all data points into five levels based on Price value
+filtered_data$color <- ifelse(filtered_data$Price <= 70, "#90EE90",  
+                    ifelse(filtered_data$Price <= 150, "#008000",  
+                    ifelse(filtered_data$Price <= 180, "#ADD8E6", 
+                    "#00008B"))) 
+
+# Plot data points of all listings in filtred data
+leaflet(filtered_data) %>% 
+  addTiles() %>%  
+  setView(lng = nyc_long, lat = nyc_lat, zoom = 12) %>%
+  addCircleMarkers(lng = ~longitude, lat = ~latitude, color = ~color, 
+                   popup = ~paste("Price:", Price),
+                   radius = 0.3, opacity = 1, fillOpacity = 1)
+```
+
+```{r}
+# Investigate ICC values
+icc(lmer(Price ~ 1 + (1 | Neighbourhood.cleansed), data = filtered_data))
+icc(lmer(Price ~ 1 + (1 | City), data = filtered_data))
+```
+
+```{r}
+# Simple Random Intercept Model
+
+model_Random_Intercept_Sample <- lmer(Price ~ City + Bathrooms + Bedrooms +  (1 |Neighbourhood.cleansed), data = filtered_data)
+summary(model_Random_Intercept_Sample)
+```
+
+```{r}
+# Classical linear model
+model_linear_Sample <- lm(Price ~ City + Bathrooms +Bedrooms, data = filtered_data)
+summary(model_linear_Sample)
+```
+
+```{r}
+# Random intercept and slope model
+model_with_random_slope_Sample <- lmer(Price ~ City +Bedrooms+Bathrooms + (1 + Bedrooms | Neighbourhood.cleansed), data = filtered_data)
+summary(model_with_random_slope_Sample)
+```
+
+```{r}
+# Model comparison
+# Create a data frame to store AIC and BIC
+model_comparisons_Sample <- data.frame(
+  Model = c("Random Intercept", "Linear", "Random Intercept and Slope"),
+  AIC = c(AIC(model_Random_Intercept_Sample), AIC(model_linear_Sample), AIC(model_with_random_slope_Sample)),
+  BIC = c(BIC(model_Random_Intercept_Sample), BIC(model_linear_Sample), BIC(model_with_random_slope_Sample))
+)
+
+# Print the comparison table
+print(model_comparisons)
+```
+
+```{r}
+# Extract random effects estimates
+re_estimates <- ranef(model_Random_Intercept_Sample)$Neighbourhood.cleansed
+re_effects_df$Significant <- re_effects_df$CI_Lower * re_effects_df$CI_Upper > 0
+
+# calculate variance
+re_se <- attr(ranef(model_Random_Intercept_Sample, condVar = TRUE)$Neighbourhood.cleansed, "postVar")
+re_se <- sqrt(apply(re_se, 1, function(x) diag(x)))
+
+# calculate 95% confidence interval
+ci_multiplier <- qnorm(1 - (1 - 0.95) / 2) 
+re_ci_lower <- re_estimates - ci_multiplier * re_se
+re_ci_upper <- re_estimates + ci_multiplier * re_se
+
+# visualize significance effect
+re_effects_df <- data.frame(
+  Group = rownames(re_estimates),
+  Estimate = re_estimates[,"(Intercept)"],
+  CI_Lower = re_ci_lower[,"(Intercept)"],
+  CI_Upper = re_ci_upper[,"(Intercept)"]
+)
+re_effects_df$Significant <- re_effects_df$CI_Lower * re_effects_df$CI_Upper > 0
+
+ggplot(re_effects_df, aes(x = Group, y = Estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper, color = Significant), width = 0.2) +
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "95% CI of Random Intercepts per Neighbour", x = "Neighbour", y = "Random Intercept")
+
+
+```
+
+```{r}
+
+# Create a data frame for ICC values
+icc_data <- data.frame(
+  Experiment = c("Experiment 1", "Experiment 1", "Experiment 2", "Experiment 2"),
+  Variable = c("Neighbourhood", "City", "Neighbourhood", "City"),
+  ICC = c(0.216, 0.112, 0.288, 0.098)
+)
+
+# Create the scatter plot with star-shaped points
+ggplot(icc_data, aes(x = Variable, y = ICC, color = Experiment)) +
+  geom_point(position = position_dodge(width = 0.5), size = 3) +
+  labs(title = "ICC Comparison Between Experiments",
+       x = "Variable",
+       y = "ICC Value") +
+  scale_color_manual(values = c("#4b2e83", "#85754d")) +  # Set custom colors
+  theme_minimal()
+```
